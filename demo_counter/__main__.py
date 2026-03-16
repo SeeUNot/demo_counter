@@ -18,15 +18,7 @@ Tests capabilities:
 """
 from __future__ import annotations
 
-import sys
 import time
-
-# Debug: trace SDK import path
-import mmo_maid_sdk as _sdk
-print(f"SDK path: {_sdk.__file__}", file=sys.stderr, flush=True)
-print(f"SDK has Plugin: {hasattr(_sdk, 'Plugin')}", file=sys.stderr, flush=True)
-if hasattr(_sdk, '_plugin'):
-    print(f"_plugin file: {_sdk._plugin.__file__}", file=sys.stderr, flush=True)
 
 from mmo_maid_sdk import Plugin, Context
 
