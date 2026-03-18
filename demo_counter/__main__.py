@@ -32,16 +32,18 @@ def ready(ctx: Context):
 
 @plugin.on_event("message_create")
 def on_message(ctx: Context, event: dict):
-    author = event.get("author") if isinstance(event.get("author"), dict) else {}
+    # Event payload uses flat fields: author_id, author_username (not nested author dict)
+    author_id = str(event.get("author_id") or "")
 
-    # Skip bot messages to prevent infinite loops
+    # Skip bot messages — check both flat and nested formats
+    author = event.get("author") if isinstance(event.get("author"), dict) else {}
     if author.get("bot"):
         return
 
     content = str(event.get("content") or "").strip().lower()
     channel_id = str(event.get("channel_id") or "")
-    user_id = str(author.get("id") or "")
-    username = author.get("username") or "someone"
+    user_id = author_id or str(author.get("id") or "")
+    username = str(event.get("author_username") or "") or author.get("username") or "someone"
 
     if content == "!demo" or content == "!demo count":
         cmd_count(ctx, channel_id, user_id, username)
