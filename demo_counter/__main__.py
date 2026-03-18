@@ -30,7 +30,7 @@ def ready(ctx: Context):
     ctx.log("demo_counter v2.1 started (SDK)")
 
 
-@plugin.on_event("message")
+@plugin.on_event("message_create")
 def on_message(ctx: Context, event: dict):
     author = event.get("author") if isinstance(event.get("author"), dict) else {}
 
@@ -84,7 +84,10 @@ def cmd_count(ctx: Context, channel_id: str, user_id: str, username: str):
     )
     msg_id = result.get("message_id")
     if msg_id:
-        ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji="👋")
+        try:
+            ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji="👋")
+        except Exception:
+            pass  # non-critical — skip if quota exhausted
 
 
 def cmd_info(ctx: Context, channel_id: str, user_id: str):
@@ -131,11 +134,14 @@ def cmd_edit(ctx: Context, channel_id: str):
         message_id=str(msg_id),
         content="✅ Message edited! The edit_message capability works.",
     )
-    ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji="✏️")
+    try:
+        ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji="✏️")
+    except Exception:
+        pass
 
 
 def cmd_react(ctx: Context, channel_id: str):
-    """!demo react — Send a message and add multiple reactions."""
+    """!demo react — Send a message and add reactions."""
     result = ctx.discord.send_message(
         channel_id=channel_id,
         content="React test — watch the reactions appear:",
@@ -143,8 +149,11 @@ def cmd_react(ctx: Context, channel_id: str):
     msg_id = result.get("message_id")
     if not msg_id:
         return
-    for emoji in ["1️⃣", "2️⃣", "3️⃣", "✅", "🎉"]:
-        ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji=emoji)
+    for emoji in ["✅", "🎉"]:
+        try:
+            ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji=emoji)
+        except Exception:
+            break
         time.sleep(0.3)
 
 
@@ -204,7 +213,10 @@ def cmd_reset(ctx: Context, channel_id: str):
     result = ctx.discord.send_message(channel_id=channel_id, content="🔄 Counter has been reset to zero.")
     msg_id = result.get("message_id")
     if msg_id:
-        ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji="🔄")
+        try:
+            ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji="🔄")
+        except Exception:
+            pass
 
 
 def cmd_help(ctx: Context, channel_id: str):
