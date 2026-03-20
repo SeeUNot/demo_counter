@@ -1,0 +1,100 @@
+{
+  "pages": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "icon": "chart-bar",
+      "widgets": [
+        {
+          "type": "stat_card",
+          "id": "total_clicks",
+          "label": "Total Clicks",
+          "rpc_method": "dashboard.get_total_stat",
+          "rpc_params": {},
+          "format": "number",
+          "width": "third"
+        },
+        {
+          "type": "stat_card",
+          "id": "unique_users",
+          "label": "Unique Users",
+          "rpc_method": "dashboard.get_users_stat",
+          "rpc_params": {},
+          "format": "number",
+          "width": "third"
+        },
+        {
+          "type": "stat_card",
+          "id": "current_goal",
+          "label": "Current Goal",
+          "rpc_method": "dashboard.get_goal_stat",
+          "rpc_params": {},
+          "format": "number",
+          "width": "third"
+        },
+        {
+          "type": "chart",
+          "id": "activity_chart",
+          "title": "Click Activity",
+          "chart_type": "bar",
+          "rpc_method": "dashboard.get_activity_chart",
+          "rpc_params": {},
+          "width": "full"
+        },
+        {
+          "type": "table",
+          "id": "leaderboard",
+          "title": "Leaderboard",
+          "rpc_method": "dashboard.get_leaderboard",
+          "rpc_params": {},
+          "columns": [
+            {"key": "rank", "label": "#", "format": "number"},
+            {"key": "user_id", "label": "User"},
+            {"key": "clicks", "label": "Clicks", "format": "number"},
+            {"key": "share", "label": "Share"}
+          ],
+          "width": "full"
+        }
+      ]
+    },
+    {
+      "id": "settings",
+      "title": "Settings",
+      "icon": "cog",
+      "widgets": [
+        {
+          "type": "form",
+          "id": "plugin_settings",
+          "rpc_method": "dashboard.get_settings",
+          "save_rpc_method": "dashboard.save_settings",
+          "fields": [
+            {
+              "key": "goal",
+              "label": "Counter Goal",
+              "type": "number",
+              "min": 1,
+              "max": 1000000
+            },
+            {
+              "key": "theme",
+              "label": "Board Theme",
+              "type": "select",
+              "options": [
+                {"value": "blue", "label": "Blue"},
+                {"value": "green", "label": "Green"},
+                {"value": "purple", "label": "Purple"},
+                {"value": "red", "label": "Red"},
+                {"value": "gold", "label": "Gold"}
+              ]
+            },
+            {
+              "key": "log_channel_id",
+              "label": "Log Channel ID",
+              "type": "text"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
