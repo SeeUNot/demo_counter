@@ -30,7 +30,7 @@ Dashboard:
 Capabilities used:
   storage:kv, discord:send_message, discord:edit_message,
   discord:delete_message, discord:add_reaction, discord:read,
-  interaction:respond, events:message_content
+  interaction:respond, events:message_content, proxy:http
 """
 from __future__ import annotations
 
@@ -159,6 +159,22 @@ def _update_board(ctx: Context):
         ctx.log(f"Board update failed: {e}", level="warning")
 
 
+def _notify_log_channel(ctx: Context, message: str) -> None:
+    """Post a notification to the configured log channel (if set)."""
+    settings = _get_settings(ctx)
+    ch = settings.get("log_channel_id", "").strip()
+    if not ch:
+        return
+    try:
+        ctx.discord.send_message(channel_id=ch, embeds=[{
+            "description": message,
+            "color": _theme_color(ctx),
+            "footer": {"text": "Demo Counter Log"},
+        }])
+    except Exception as e:
+        ctx.log(f"Log channel post failed: {e}", level="warning")
+
+
 def _increment(ctx: Context, user_id: str, amount: int = 1) -> dict:
     """Increment counter for a user. Returns updated data."""
     data = _get_counter(ctx)
@@ -178,6 +194,22 @@ def _increment(ctx: Context, user_id: str, amount: int = 1) -> dict:
     ctx.kv.set("activity", activity)
 
     ctx.kv.set("counter", data)
+
+    # Milestone notifications to log channel
+    total = data["total"]
+    goal = data.get("goal", DEFAULT_GOAL)
+    prev_total = total - amount
+    # Goal reached
+    if prev_total < goal <= total:
+        announcement = _get_settings(ctx).get("goal_message", "")
+        msg = f"\U0001f3c6 **Goal reached!** Counter hit **{total}** / {goal}!"
+        if announcement:
+            msg += f"\n> {announcement}"
+        _notify_log_channel(ctx, msg)
+    # Every 10 clicks milestone
+    elif (total // 10) > (prev_total // 10):
+        _notify_log_channel(ctx, f"\U0001f4c8 Counter milestone: **{total}** clicks!")
+
     return data
 
 
@@ -196,14 +228,33 @@ def ready(ctx: Context):
 
 @plugin.schedule(300)
 def heartbeat(ctx: Context):
-    """Record a periodic heartbeat with current stats."""
+    """Record heartbeat + post periodic summary to log channel."""
+    now = int(time.time())
     data = _get_counter(ctx)
+    prev = ctx.kv.get("heartbeat") or {}
+    prev_total = prev.get("total", 0) if isinstance(prev, dict) else 0
+    prev_users = prev.get("users", 0) if isinstance(prev, dict) else 0
+
+    current_total = data.get("total", 0)
+    current_users = len(data.get("users", {}))
+    clicks_since = current_total - prev_total
+    new_users = current_users - prev_users
+
     ctx.kv.set("heartbeat", {
-        "ts": int(time.time()),
-        "total": data.get("total", 0),
-        "users": len(data.get("users", {})),
+        "ts": now,
+        "total": current_total,
+        "users": current_users,
     })
-    ctx.log(f"Heartbeat: total={data.get('total', 0)}, users={len(data.get('users', {}))}")
+
+    # Only post to log channel if there was activity
+    if clicks_since > 0:
+        parts = [f"\U0001f4ca **5-min summary:** {clicks_since} click(s)"]
+        if new_users > 0:
+            parts.append(f"{new_users} new user(s)")
+        parts.append(f"(total: {current_total})")
+        _notify_log_channel(ctx, " \u2022 ".join(parts))
+
+    ctx.log(f"Heartbeat: total={current_total}, users={current_users}, +{clicks_since} clicks")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -332,6 +383,14 @@ def slash_info(ctx: Context, event: dict):
     ctx.interaction.respond(content="\n".join(lines))
 
 
+@plugin.on_slash_command("demo-fetch")
+def slash_fetch(ctx: Context, event: dict):
+    """/demo-fetch — Fetch a random fact from an external API (proxy:http demo)."""
+    channel_id = str(event.get("channel_id") or "")
+    ctx.interaction.defer(ephemeral=False)
+    _do_fetch_followup(ctx)
+
+
 @plugin.on_slash_command("demo-help")
 def slash_help(ctx: Context, event: dict):
     """/demo-help — Show all available commands."""
@@ -346,6 +405,7 @@ def slash_help(ctx: Context, event: dict):
                     "`/demo-stats` \u2014 Show leaderboard",
                     "`/demo-goal` \u2014 Set a custom goal (modal)",
                     "`/demo-info` \u2014 Server info",
+                    "`/demo-fetch` \u2014 Fetch a random fact (HTTP proxy)",
                     "`/demo-help` \u2014 This message",
                 ]), "inline": False},
                 {"name": "Board Buttons", "value": "\n".join([
@@ -358,6 +418,7 @@ def slash_help(ctx: Context, event: dict):
                 {"name": "Text Commands", "value": "\n".join([
                     "`!demo` \u2014 Increment counter",
                     "`!demo board` \u2014 Post the board",
+                    "`!demo fetch` \u2014 Random fact (HTTP proxy)",
                     "`!demo help` \u2014 Show this message",
                 ]), "inline": False},
             ],
@@ -448,6 +509,7 @@ def on_board_reset(ctx: Context, event: dict):
     ctx.kv.set("counter", data)
     ctx.interaction.respond(content="\U0001f504 Counter has been reset to zero!", ephemeral=True)
     _update_board(ctx)
+    _notify_log_channel(ctx, "\U0001f504 Counter was reset to zero.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -508,6 +570,49 @@ def on_goal_submit(ctx: Context, event: dict):
         ephemeral=True,
     )
     _update_board(ctx)
+    _notify_log_channel(ctx, f"\U0001f3af Goal changed to **{goal}**.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  HTTP Proxy demo helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_FACT_URL = "https://uselessfacts.jsph.pl/api/v2/facts/random?language=en"
+
+
+def _fetch_random_fact(ctx: Context) -> str:
+    """Fetch a random fact via the HTTP proxy. Returns the fact text or an error."""
+    try:
+        resp = ctx.http.get(_FACT_URL)
+        if resp.get("status") == 200:
+            import json
+            body = json.loads(resp.get("body_bytes", "{}"))
+            return body.get("text", "No fact found.")
+        return f"API returned status {resp.get('status', '?')}"
+    except Exception as e:
+        return f"Fetch failed: {e}"
+
+
+def _do_fetch(ctx: Context, channel_id: str):
+    """!demo fetch — Post a random fact (text command version)."""
+    fact = _fetch_random_fact(ctx)
+    ctx.discord.send_message(channel_id=channel_id, embeds=[{
+        "title": "\U0001f4e1 Random Fact (via HTTP Proxy)",
+        "description": fact,
+        "color": _theme_color(ctx),
+        "footer": {"text": "Fetched from uselessfacts.jsph.pl \u2022 Demonstrates proxy:http capability"},
+    }])
+
+
+def _do_fetch_followup(ctx: Context):
+    """Fetch a fact and send as interaction followup."""
+    fact = _fetch_random_fact(ctx)
+    ctx.interaction.followup(embeds=[{
+        "title": "\U0001f4e1 Random Fact (via HTTP Proxy)",
+        "description": fact,
+        "color": _theme_color(ctx),
+        "footer": {"text": "Fetched from uselessfacts.jsph.pl \u2022 Demonstrates proxy:http capability"},
+    }])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -554,6 +659,9 @@ def on_message(ctx: Context, event: dict):
         if msg_id:
             ctx.kv.set("board", {"channel_id": channel_id, "message_id": str(msg_id)})
 
+    elif content == "!demo fetch":
+        _do_fetch(ctx, channel_id)
+
     elif content == "!demo help":
         ctx.discord.send_message(channel_id=channel_id, embeds=[{
             "title": "\U0001f4d6 Demo Counter \u2014 Commands",
@@ -566,7 +674,7 @@ def on_message(ctx: Context, event: dict):
                 "`/demo-info` \u2014 Server info",
                 "`/demo-help` \u2014 This message",
                 "",
-                "**Text commands:** `!demo`, `!demo board`, `!demo help`",
+                "**Text commands:** `!demo`, `!demo board`, `!demo fetch`, `!demo help`",
             ]),
             "footer": {"text": "MMO Maid SDK v0.2.0"},
         }])
