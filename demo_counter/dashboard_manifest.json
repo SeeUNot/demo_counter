@@ -91,6 +91,26 @@
               "key": "log_channel_id",
               "label": "Log Channel ID",
               "type": "text"
+            },
+            {
+              "key": "welcome_channel_id",
+              "label": "Welcome Channel ID",
+              "type": "text"
+            },
+            {
+              "key": "role_10_id",
+              "label": "Role for 10 Clicks (Role ID)",
+              "type": "text"
+            },
+            {
+              "key": "role_50_id",
+              "label": "Role for 50 Clicks (Role ID)",
+              "type": "text"
+            },
+            {
+              "key": "role_100_id",
+              "label": "Role for 100 Clicks (Role ID)",
+              "type": "text"
             }
           ]
         }

@@ -30,7 +30,8 @@ Dashboard:
 Capabilities used:
   storage:kv, discord:send_message, discord:edit_message,
   discord:delete_message, discord:add_reaction, discord:read,
-  interaction:respond, events:message_content, proxy:http
+  discord:manage_roles, interaction:respond, events:message_content,
+  proxy:http
 """
 from __future__ import annotations
 
@@ -76,6 +77,10 @@ def _get_settings(ctx: Context) -> dict:
     settings.setdefault("goal", DEFAULT_GOAL)
     settings.setdefault("theme", "blue")
     settings.setdefault("log_channel_id", "")
+    settings.setdefault("welcome_channel_id", "")
+    settings.setdefault("role_10_id", "")   # Role to grant at 10 clicks
+    settings.setdefault("role_50_id", "")   # Role to grant at 50 clicks
+    settings.setdefault("role_100_id", "")  # Role to grant at 100 clicks
     return settings
 
 
@@ -209,6 +214,10 @@ def _increment(ctx: Context, user_id: str, amount: int = 1) -> dict:
     # Every 10 clicks milestone
     elif (total // 10) > (prev_total // 10):
         _notify_log_channel(ctx, f"\U0001f4c8 Counter milestone: **{total}** clicks!")
+
+    # Role rewards — check if user crossed a threshold
+    user_clicks = data["users"].get(user_id, 0)
+    _check_role_reward(ctx, user_id, user_clicks)
 
     return data
 
@@ -419,7 +428,15 @@ def slash_help(ctx: Context, event: dict):
                     "`!demo` \u2014 Increment counter",
                     "`!demo board` \u2014 Post the board",
                     "`!demo fetch` \u2014 Random fact (HTTP proxy)",
+                    "`!demo poll` \u2014 Start a reaction poll",
+                    "`!demo results` \u2014 Show poll results",
                     "`!demo help` \u2014 Show this message",
+                ]), "inline": False},
+                {"name": "Auto Features", "value": "\n".join([
+                    "\U0001f44b **Welcome** \u2014 Greets new members with counter stats",
+                    "\U0001f3c5 **Role Rewards** \u2014 Grants roles at 10/50/100 clicks",
+                    "\U0001f4ca **Polls** \u2014 Reaction-based voting with tracking",
+                    "\U0001f4e1 **Scheduled** \u2014 5-min activity summaries to log channel",
                 ]), "inline": False},
             ],
             "footer": {"text": "MMO Maid SDK v0.2.0 \u2022 Full feature showcase"},
@@ -574,6 +591,100 @@ def on_goal_submit(ctx: Context, event: dict):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Role rewards — assign roles when users hit click milestones
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ROLE_THRESHOLDS = [
+    (100, "role_100_id", "\U0001f451 Legend Clicker"),
+    (50,  "role_50_id",  "\U0001f525 Super Clicker"),
+    (10,  "role_10_id",  "\U0001f44d Clicker"),
+]
+
+
+def _check_role_reward(ctx: Context, user_id: str, clicks: int) -> None:
+    """Grant role rewards when a user crosses a click threshold."""
+    settings = _get_settings(ctx)
+    granted = ctx.kv.get(f"roles_granted:{user_id}") or []
+    if not isinstance(granted, list):
+        granted = []
+
+    for threshold, setting_key, label in _ROLE_THRESHOLDS:
+        role_id = str(settings.get(setting_key, "")).strip()
+        if not role_id or not role_id.isdigit():
+            continue
+        if clicks >= threshold and role_id not in granted:
+            try:
+                ctx.discord.add_role(user_id=user_id, role_id=role_id, reason=f"Demo Counter: {threshold} clicks")
+                granted.append(role_id)
+                ctx.kv.set(f"roles_granted:{user_id}", granted)
+                _notify_log_channel(ctx, f"{label} \u2014 <@{user_id}> earned the role at **{clicks}** clicks!")
+            except Exception as e:
+                ctx.log(f"Role reward failed for {user_id}: {e}", level="warning")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Welcome message — greet new members with counter stats
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@plugin.on_event("member_join")
+def on_member_join(ctx: Context, event: dict):
+    """Send a welcome embed when a new member joins."""
+    settings = _get_settings(ctx)
+    welcome_ch = str(settings.get("welcome_channel_id", "")).strip()
+    if not welcome_ch:
+        return
+
+    user_id = str(event.get("user_id") or event.get("author_id") or "")
+    username = str(event.get("username") or event.get("display_name") or "someone")
+    data = _get_counter(ctx)
+    total = data.get("total", 0)
+    users = len(data.get("users", {}))
+    goal = data.get("goal", DEFAULT_GOAL)
+
+    ctx.discord.send_message(channel_id=welcome_ch, embeds=[{
+        "title": f"\U0001f44b Welcome, {username}!",
+        "description": (
+            f"We're counting together! The counter is at **{total}** / {goal} "
+            f"with **{users}** participants.\n\n"
+            f"Type `!demo` to add your clicks, or use `/demo-board` to see the live board!"
+        ),
+        "color": _theme_color(ctx),
+        "footer": {"text": "MMO Maid Demo Counter"},
+    }])
+    _notify_log_channel(ctx, f"\U0001f44b {username} joined — welcome message sent.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Reaction poll — post a poll and track reactions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_POLL_EMOJIS = ["\U0001f44d", "\U0001f44e", "\U0001f914", "\U0001f525", "\U0001f4af"]
+
+
+@plugin.on_event("reaction_add")
+def on_reaction_add(ctx: Context, event: dict):
+    """Track reactions on poll messages."""
+    message_id = str(event.get("message_id") or "")
+    poll = ctx.kv.get("poll")
+    if not poll or not isinstance(poll, dict):
+        return
+    if message_id != str(poll.get("message_id", "")):
+        return
+
+    user_id = str(event.get("user_id") or "")
+    emoji = str(event.get("emoji") or "")
+    if not user_id or not emoji:
+        return
+
+    votes = poll.get("votes", {})
+    votes.setdefault(emoji, [])
+    if user_id not in votes[emoji]:
+        votes[emoji].append(user_id)
+    poll["votes"] = votes
+    ctx.kv.set("poll", poll)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  HTTP Proxy demo helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -662,6 +773,42 @@ def on_message(ctx: Context, event: dict):
     elif content == "!demo fetch":
         _do_fetch(ctx, channel_id)
 
+    elif content == "!demo poll":
+        result = ctx.discord.send_message(channel_id=channel_id, embeds=[{
+            "title": "\U0001f4ca Quick Poll",
+            "description": "React to vote! Which is better?\n\n\U0001f44d Yes\n\U0001f44e No\n\U0001f914 Maybe\n\U0001f525 Absolutely\n\U0001f4af 100%",
+            "color": _theme_color(ctx),
+            "footer": {"text": "Use !demo results to see votes"},
+        }])
+        msg_id = result.get("message_id")
+        if msg_id:
+            ctx.kv.set("poll", {"message_id": str(msg_id), "channel_id": channel_id, "votes": {}})
+            for emoji in _POLL_EMOJIS:
+                try:
+                    ctx.discord.add_reaction(channel_id=channel_id, message_id=str(msg_id), emoji=emoji)
+                except Exception:
+                    pass
+                time.sleep(0.3)
+
+    elif content == "!demo results":
+        poll = ctx.kv.get("poll")
+        if not poll or not isinstance(poll, dict):
+            ctx.discord.send_message(channel_id=channel_id, content="No active poll. Use `!demo poll` to start one.")
+        else:
+            votes = poll.get("votes", {})
+            lines = []
+            for emoji in _POLL_EMOJIS:
+                count = len(votes.get(emoji, []))
+                bar = "\u2588" * count
+                lines.append(f"{emoji} {bar} **{count}**")
+            total = sum(len(v) for v in votes.values())
+            ctx.discord.send_message(channel_id=channel_id, embeds=[{
+                "title": "\U0001f4ca Poll Results",
+                "description": "\n".join(lines),
+                "color": _theme_color(ctx),
+                "footer": {"text": f"{total} total vote(s)"},
+            }])
+
     elif content == "!demo help":
         ctx.discord.send_message(channel_id=channel_id, embeds=[{
             "title": "\U0001f4d6 Demo Counter \u2014 Commands",
@@ -674,7 +821,7 @@ def on_message(ctx: Context, event: dict):
                 "`/demo-info` \u2014 Server info",
                 "`/demo-help` \u2014 This message",
                 "",
-                "**Text commands:** `!demo`, `!demo board`, `!demo fetch`, `!demo help`",
+                "**Text commands:** `!demo`, `!demo board`, `!demo fetch`, `!demo poll`, `!demo results`, `!demo help`",
             ]),
             "footer": {"text": "MMO Maid SDK v0.2.0"},
         }])
@@ -772,6 +919,10 @@ def dash_get_settings(ctx: Context, params: dict):
             "goal": str(settings.get("goal", DEFAULT_GOAL)),
             "theme": settings.get("theme", "blue"),
             "log_channel_id": settings.get("log_channel_id", ""),
+            "welcome_channel_id": settings.get("welcome_channel_id", ""),
+            "role_10_id": settings.get("role_10_id", ""),
+            "role_50_id": settings.get("role_50_id", ""),
+            "role_100_id": settings.get("role_100_id", ""),
         },
     }
 
@@ -793,6 +944,10 @@ def dash_save_settings(ctx: Context, params: dict):
         settings["theme"] = theme
 
     settings["log_channel_id"] = str(values.get("log_channel_id", "")).strip()
+    settings["welcome_channel_id"] = str(values.get("welcome_channel_id", "")).strip()
+    settings["role_10_id"] = str(values.get("role_10_id", "")).strip()
+    settings["role_50_id"] = str(values.get("role_50_id", "")).strip()
+    settings["role_100_id"] = str(values.get("role_100_id", "")).strip()
 
     ctx.kv.set("settings", settings)
 
